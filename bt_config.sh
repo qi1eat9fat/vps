@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 宝塔面板配置修改脚本
-# 用法: ./bt_config.sh [选项]
+# 宝塔面板配置修改脚本（CentOS 7.6专用版）
+# 用法: ./bt_config_centos.sh [选项]
 
 # 默认值
 DEFAULT_SECURITY_ENTRY="/btpanel"
@@ -14,7 +14,7 @@ AUTH_FILE="/www/server/panel/data/userInfo.json"
 
 # 显示帮助信息
 show_help() {
-    echo "宝塔面板配置修改脚本"
+    echo "宝塔面板配置修改脚本 (CentOS 7.6)"
     echo ""
     echo "用法: $0 [选项]"
     echo ""
@@ -46,6 +46,68 @@ check_bt_panel() {
     fi
 }
 
+# 检查并配置防火墙（CentOS 7.6专用）
+configure_firewall() {
+    local port=$1
+    
+    # 检查firewalld是否运行
+    if systemctl is-active --quiet firewalld; then
+        echo "检测到firewalld正在运行，配置端口放行..."
+        
+        # 检查端口是否已开放
+        if firewall-cmd --list-ports | grep -q "$port/tcp"; then
+            echo "端口 $port 已在firewalld中开放"
+        else
+            # 开放端口
+            firewall-cmd --permanent --add-port=$port/tcp
+            if [[ $? -eq 0 ]]; then
+                firewall-cmd --reload
+                echo "成功在firewalld中开放端口: $port"
+            else
+                echo "警告: 无法通过firewalld开放端口 $port"
+            fi
+        fi
+    else
+        echo "firewalld未运行，检查iptables..."
+        
+        # 检查iptables规则
+        if iptables -L INPUT -n | grep -q "tcp dpt:$port"; then
+            echo "端口 $port 已在iptables中开放"
+        else
+            # 添加iptables规则
+            iptables -A INPUT -p tcp --dport $port -j ACCEPT
+            if [[ $? -eq 0 ]]; then
+                # 保存iptables规则（CentOS 7）
+                if command -v iptables-save >/dev/null 2>&1; then
+                    iptables-save > /etc/sysconfig/iptables
+                    echo "成功在iptables中开放端口: $port"
+                else
+                    echo "警告: 端口 $port 已临时开放，但需要手动保存iptables规则"
+                fi
+            else
+                echo "警告: 无法通过iptables开放端口 $port"
+            fi
+        fi
+    fi
+    
+    # 额外检查SELinux
+    if command -v getenforce >/dev/null 2>&1; then
+        if [[ $(getenforce) != "Disabled" ]]; then
+            echo "检测到SELinux启用，检查端口权限..."
+            if ! semanage port -l | grep -q "http_port_t.*tcp.*$port"; then
+                echo "正在为SELinux添加端口权限..."
+                if command -v semanage >/dev/null 2>&1; then
+                    semanage port -a -t http_port_t -p tcp $port
+                    echo "SELinux端口权限已添加"
+                else
+                    echo "警告: 请安装policycoreutils-python-utils来管理SELinux端口"
+                    echo "      或手动执行: semanage port -a -t http_port_t -p tcp $port"
+                fi
+            fi
+        fi
+    fi
+}
+
 # 验证参数
 validate_params() {
     if [[ -z "$SECURITY_ENTRY" && -z "$USERNAME" && -z "$PASSWORD" && -z "$PORT" ]]; then
@@ -59,6 +121,15 @@ validate_params() {
         if [[ ! "$PORT" =~ ^[0-9]+$ ]] || [[ "$PORT" -lt 1 ]] || [[ "$PORT" -gt 65535 ]]; then
             echo "错误: 端口号必须是1-65535之间的数字"
             exit 1
+        fi
+        
+        # 检查端口是否被占用（排除当前宝塔端口）
+        CURRENT_PORT=$(cat "$CONFIG_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
+        if [[ "$PORT" != "$CURRENT_PORT" ]]; then
+            if netstat -tuln | grep -q ":$PORT "; then
+                echo "错误: 端口 $PORT 已被其他程序占用"
+                exit 1
+            fi
         fi
     fi
 
@@ -77,18 +148,8 @@ change_port() {
         echo "正在修改面板端口为: $PORT"
         echo "$PORT" > "$CONFIG_FILE"
         
-        # 检查防火墙设置
-        if command -v ufw >/dev/null 2>&1; then
-            ufw allow $PORT/tcp >/dev/null 2>&1
-            echo "已开放UFW防火墙端口: $PORT"
-        elif command -v firewall-cmd >/dev/null 2>&1; then
-            firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1
-            firewall-cmd --reload >/dev/null 2>&1
-            echo "已开放FirewallD防火墙端口: $PORT"
-        elif command -v iptables >/dev/null 2>&1; then
-            iptables -A INPUT -p tcp --dport $PORT -j ACCEPT >/dev/null 2>&1
-            echo "已开放iptables端口: $PORT"
-        fi
+        # 配置防火墙
+        configure_firewall "$PORT"
     fi
 }
 
@@ -108,10 +169,15 @@ change_credentials() {
         # 使用宝塔命令行工具修改
         if [[ ! -z "$USERNAME" && ! -z "$PASSWORD" ]]; then
             cd /www/server/panel && python tools.py panel "$USERNAME" "$PASSWORD"
+            echo "用户名和密码已修改"
         elif [[ ! -z "$USERNAME" ]]; then
             cd /www/server/panel && python tools.py username "$USERNAME"
+            echo "用户名已修改为: $USERNAME"
         elif [[ ! -z "$PASSWORD" ]]; then
-            cd /www/server/panel && python tools.py panel "$PASSWORD"
+            # 获取当前用户名
+            CURRENT_USER=$(cat /www/server/panel/data/default.pl 2>/dev/null || echo "admin")
+            cd /www/server/panel && python tools.py panel "$CURRENT_USER" "$PASSWORD"
+            echo "密码已修改"
         fi
     fi
 }
@@ -119,10 +185,18 @@ change_credentials() {
 # 重启宝塔服务
 restart_bt_panel() {
     echo "正在重启宝塔面板服务..."
-    /etc/init.d/bt restart >/dev/null 2>&1
+    
+    # CentOS 7使用systemctl
+    if systemctl is-active --quiet bt; then
+        systemctl restart bt
+    else
+        /etc/init.d/bt restart
+    fi
     
     if [[ $? -eq 0 ]]; then
         echo "宝塔面板服务重启成功"
+        # 等待服务完全启动
+        sleep 3
     else
         echo "警告: 宝塔面板服务重启失败，请手动检查"
     fi
@@ -154,12 +228,23 @@ show_result() {
     fi
     
     echo ""
-    echo "访问地址:"
-    if [[ ! -z "$PORT" || ! -z "$SECURITY_ENTRY" ]]; then
-        IP=$(curl -s ipv4.icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}' || echo "服务器IP")
-        ENTRY=$(cat "$USER_FILE" 2>/dev/null || echo "$DEFAULT_SECURITY_ENTRY")
-        PORT=$(cat "$CONFIG_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
-        echo "http://$IP:$PORT$ENTRY"
+    echo "访问信息:"
+    IP=$(curl -s ipv4.icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}' || echo "服务器IP")
+    ENTRY=$(cat "$USER_FILE" 2>/dev/null || echo "$DEFAULT_SECURITY_ENTRY")
+    PORT=$(cat "$CONFIG_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
+    echo "面板地址: http://$IP:$PORT$ENTRY"
+    echo ""
+    echo "防火墙状态:"
+    if systemctl is-active --quiet firewalld; then
+        echo "firewalld: 运行中"
+        firewall-cmd --list-ports | grep -q "$PORT/tcp" && echo "端口 $PORT: 已开放" || echo "端口 $PORT: 未开放"
+    else
+        echo "firewalld: 未运行"
+        if iptables -L INPUT -n | grep -q "tcp dpt:$PORT"; then
+            echo "iptables端口 $PORT: 已开放"
+        else
+            echo "iptables端口 $PORT: 未开放"
+        fi
     fi
     echo "=" * 50
 }
