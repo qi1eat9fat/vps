@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 宝塔面板配置修改脚本（CentOS 7.6兼容版）
-# 用法: ./bt_config_centos.sh [选项]
+# 宝塔面板配置修改脚本（直接文件操作版）
+# 用法: ./bt_config_direct.sh [选项]
 
 # 默认值
 DEFAULT_SECURITY_ENTRY="/btpanel"
@@ -11,10 +11,11 @@ DEFAULT_PORT="8888"
 CONFIG_FILE="/www/server/panel/data/port.pl"
 USER_FILE="/www/server/panel/data/admin_path.pl"
 AUTH_FILE="/www/server/panel/data/userInfo.json"
+DEFAULT_USER_FILE="/www/server/panel/data/default.pl"
 
 # 显示帮助信息
 show_help() {
-    echo "宝塔面板配置修改脚本 (CentOS 7.6兼容版)"
+    echo "宝塔面板配置修改脚本 (直接文件操作版)"
     echo ""
     echo "用法: $0 [选项]"
     echo ""
@@ -46,150 +47,149 @@ check_bt_panel() {
     fi
 }
 
-# 检查Python版本并创建兼容的修改脚本
-create_python_script() {
+# 生成MD5哈希（兼容旧系统）
+md5_hash() {
+    local str=$1
+    if command -v md5sum >/dev/null 2>&1; then
+        echo -n "$str" | md5sum | awk '{print $1}'
+    elif command -v md5 >/dev/null 2>&1; then
+        echo -n "$str" | md5
+    else
+        # 使用Python作为备选
+        python -c "import hashlib; print(hashlib.md5('$str'.encode()).hexdigest())" 2>/dev/null
+    fi
+}
+
+# 生成随机盐值
+generate_salt() {
+    cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 12 | head -n 1
+}
+
+# 直接修改用户名和密码文件
+change_credentials_direct() {
     local username=$1
     local password=$2
     
-    # 创建Python脚本文件
-    cat > /tmp/bt_change_credentials.py << 'EOF'
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-import sys
-import os
+    echo "正在直接修改面板凭据..."
+    
+    # 修改用户名
+    if [[ ! -z "$username" ]]; then
+        if [[ ${#username} -lt 3 ]]; then
+            echo "错误: 用户名长度至少3位"
+            return 1
+        fi
+        
+        # 更新default.pl文件
+        echo "$username" > "$DEFAULT_USER_FILE"
+        echo "用户名已修改为: $username"
+        
+        # 更新userInfo.json中的用户名
+        if [[ -f "$AUTH_FILE" ]]; then
+            local temp_file=$(mktemp)
+            if python -c "
 import json
-import hashlib
-import random
-import string
-
-sys.path.insert(0, '/www/server/panel')
-os.chdir('/www/server/panel')
-
 try:
-    import public
-    from BTPanel import session, cache
-except ImportError:
-    print("错误: 无法导入宝塔面板模块")
-    sys.exit(1)
-
-def change_username(new_username):
-    """修改用户名"""
-    try:
-        if not new_username or len(new_username) < 3:
-            print("错误: 用户名长度至少3位")
-            return False
-            
-        # 读取当前配置
-        auth_file = '/www/server/panel/data/userInfo.json'
-        if os.path.exists(auth_file):
-            with open(auth_file, 'r') as f:
-                auth_data = json.load(f)
-        else:
-            auth_data = {}
-        
-        # 更新用户名
-        auth_data['username'] = new_username
-        
-        # 保存配置
-        with open(auth_file, 'w') as f:
-            json.dump(auth_data, f)
-        
-        # 更新默认用户文件
-        default_file = '/www/server/panel/data/default.pl'
-        with open(default_file, 'w') as f:
-            f.write(new_username)
-        
-        print("用户名修改成功")
-        return True
-        
-    except Exception as e:
-        print("修改用户名失败: " + str(e))
-        return False
-
-def change_password(username, new_password):
-    """修改密码"""
-    try:
-        if not new_password or len(new_password) < 5:
-            print("错误: 密码长度至少5位")
-            return False
-            
-        # 生成盐值
-        salt = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(12))
-        
-        # 计算密码哈希
-        password_hash = hashlib.md5((new_password + salt).encode('utf-8')).hexdigest()
-        
-        # 读取当前配置
-        auth_file = '/www/server/panel/data/userInfo.json'
-        if os.path.exists(auth_file):
-            with open(auth_file, 'r') as f:
-                auth_data = json.load(f)
-        else:
-            auth_data = {}
-        
-        # 更新密码信息
-        auth_data['password'] = password_hash
-        auth_data['salt'] = salt
-        
-        # 保存配置
-        with open(auth_file, 'w') as f:
-            json.dump(auth_data, f)
-        
-        print("密码修改成功")
-        return True
-        
-    except Exception as e:
-        print("修改密码失败: " + str(e))
-        return False
-
-def change_both(username, password):
-    """同时修改用户名和密码"""
-    try:
-        if not change_username(username):
-            return False
-        if not change_password(username, password):
-            return False
-        print("用户名和密码修改成功")
-        return True
-    except Exception as e:
-        print("修改失败: " + str(e))
-        return False
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("用法: python bt_change_credentials.py <username> <password>")
-        print("       python bt_change_credentials.py username <new_username>")
-        print("       python bt_change_credentials.py password <new_password>")
-        sys.exit(1)
-    
-    action = sys.argv[1]
-    
-    if action == "username":
-        change_username(sys.argv[2])
-    elif action == "password":
-        # 获取当前用户名
-        try:
-            with open('/www/server/panel/data/default.pl', 'r') as f:
-                current_username = f.read().strip()
-            change_password(current_username, sys.argv[2])
-        except:
-            change_password("admin", sys.argv[2])
-    else:
-        change_both(sys.argv[1], sys.argv[2])
+    with open('$AUTH_FILE', 'r') as f:
+        data = json.load(f)
+    data['username'] = '$username'
+    with open('$temp_file', 'w') as f:
+        json.dump(data, f)
+    print('success')
+except Exception as e:
+    print('error: ' + str(e))
+" 2>/dev/null | grep -q "success"; then
+                mv "$temp_file" "$AUTH_FILE"
+                chown www:www "$AUTH_FILE"
+                chmod 600 "$AUTH_FILE"
+            else
+                rm -f "$temp_file"
+                # 如果JSON操作失败，创建基本的userInfo.json
+                cat > "$AUTH_FILE" << EOF
+{
+    "username": "$username",
+    "password": "need_update",
+    "salt": "need_update"
+}
 EOF
-
-    # 执行Python脚本
-    if [[ ! -z "$username" && ! -z "$password" ]]; then
-        python /tmp/bt_change_credentials.py "$username" "$password"
-    elif [[ ! -z "$username" ]]; then
-        python /tmp/bt_change_credentials.py username "$username"
-    elif [[ ! -z "$password" ]]; then
-        python /tmp/bt_change_credentials.py password "$password"
+                chown www:www "$AUTH_FILE"
+                chmod 600 "$AUTH_FILE"
+                echo "创建新的用户配置文件"
+            fi
+        else
+            # 创建userInfo.json文件
+            cat > "$AUTH_FILE" << EOF
+{
+    "username": "$username",
+    "password": "need_update",
+    "salt": "need_update"
+}
+EOF
+            chown www:www "$AUTH_FILE"
+            chmod 600 "$AUTH_FILE"
+            echo "创建用户配置文件"
+        fi
     fi
     
-    # 清理临时文件
-    rm -f /tmp/bt_change_credentials.py
+    # 修改密码
+    if [[ ! -z "$password" ]]; then
+        if [[ ${#password} -lt 5 ]]; then
+            echo "错误: 密码长度至少5位"
+            return 1
+        fi
+        
+        local salt=$(generate_salt)
+        local password_hash=$(md5_hash "${password}${salt}")
+        
+        if [[ -f "$AUTH_FILE" ]]; then
+            local temp_file=$(mktemp)
+            if python -c "
+import json
+try:
+    with open('$AUTH_FILE', 'r') as f:
+        data = json.load(f)
+    data['password'] = '$password_hash'
+    data['salt'] = '$salt'
+    with open('$temp_file', 'w') as f:
+        json.dump(data, f)
+    print('success')
+except Exception as e:
+    print('error: ' + str(e))
+" 2>/dev/null | grep -q "success"; then
+                mv "$temp_file" "$AUTH_FILE"
+                chown www:www "$AUTH_FILE"
+                chmod 600 "$AUTH_FILE"
+                echo "密码修改成功"
+            else
+                rm -f "$temp_file"
+                echo "警告: JSON操作失败，使用备用方法"
+                # 备用方法：直接写入文件
+                cat > "$AUTH_FILE" << EOF
+{
+    "username": "$username",
+    "password": "$password_hash",
+    "salt": "$salt"
+}
+EOF
+                chown www:www "$AUTH_FILE"
+                chmod 600 "$AUTH_FILE"
+                echo "密码修改成功（备用方法）"
+            fi
+        else
+            # 创建新的userInfo.json
+            cat > "$AUTH_FILE" << EOF
+{
+    "username": "${username:-admin}",
+    "password": "$password_hash",
+    "salt": "$salt"
+}
+EOF
+            chown www:www "$AUTH_FILE"
+            chmod 600 "$AUTH_FILE"
+            echo "密码修改成功（新文件）"
+        fi
+    fi
+    
+    return 0
 }
 
 # 检查并配置防火墙（CentOS 7.6专用）
@@ -235,27 +235,6 @@ configure_firewall() {
             fi
         fi
     fi
-    
-    # 额外检查SELinux
-    if command -v getenforce >/dev/null 2>&1; then
-        if [[ $(getenforce) != "Disabled" ]]; then
-            echo "检测到SELinux启用，检查端口权限..."
-            if command -v semanage >/dev/null 2>&1; then
-                if ! semanage port -l 2>/dev/null | grep -q "http_port_t.*tcp.*$port"; then
-                    echo "正在为SELinux添加端口权限..."
-                    semanage port -a -t http_port_t -p tcp $port >/dev/null 2>&1
-                    if [[ $? -eq 0 ]]; then
-                        echo "SELinux端口权限已添加"
-                    else
-                        echo "警告: 无法添加SELinux端口权限，请手动执行:"
-                        echo "      semanage port -a -t http_port_t -p tcp $port"
-                    fi
-                fi
-            else
-                echo "提示: 要管理SELinux端口，请安装: yum install policycoreutils-python"
-            fi
-        fi
-    fi
 }
 
 # 验证参数
@@ -273,7 +252,7 @@ validate_params() {
             exit 1
         fi
         
-        # 检查端口是否被占用（排除当前宝塔端口）
+        # 检查端口是否被占用
         CURRENT_PORT=$(cat "$CONFIG_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
         if [[ "$PORT" != "$CURRENT_PORT" ]]; then
             if netstat -tuln 2>/dev/null | grep -q ":$PORT "; then
@@ -297,6 +276,8 @@ change_port() {
     if [[ ! -z "$PORT" ]]; then
         echo "正在修改面板端口为: $PORT"
         echo "$PORT" > "$CONFIG_FILE"
+        chown www:www "$CONFIG_FILE"
+        chmod 644 "$CONFIG_FILE"
         
         # 配置防火墙
         configure_firewall "$PORT"
@@ -308,29 +289,8 @@ change_security_entry() {
     if [[ ! -z "$SECURITY_ENTRY" ]]; then
         echo "正在修改安全入口为: $SECURITY_ENTRY"
         echo "$SECURITY_ENTRY" > "$USER_FILE"
-    fi
-}
-
-# 修改用户名和密码（使用兼容方法）
-change_credentials() {
-    if [[ ! -z "$USERNAME" || ! -z "$PASSWORD" ]]; then
-        echo "正在修改面板凭据..."
-        
-        # 使用兼容的Python脚本修改
-        create_python_script "$USERNAME" "$PASSWORD"
-        
-        # 同时尝试使用宝塔命令行工具（备用方法）
-        if [[ ! -z "$USERNAME" && ! -z "$PASSWORD" ]]; then
-            echo "使用备用方法修改凭据..."
-            cd /www/server/panel && python -c "
-import sys
-sys.path.insert(0, '/www/server/panel')
-import public
-public.set_panel_username('$USERNAME')
-public.set_panel_password('$PASSWORD')
-print('备用方法执行完成')
-" 2>/dev/null || echo "备用方法执行完成"
-        fi
+        chown www:www "$USER_FILE"
+        chmod 644 "$USER_FILE"
     fi
 }
 
@@ -338,21 +298,27 @@ print('备用方法执行完成')
 restart_bt_panel() {
     echo "正在重启宝塔面板服务..."
     
-    # CentOS 7使用systemctl
+    # 停止服务
     if systemctl is-active --quiet bt; then
-        systemctl restart bt
+        systemctl stop bt
     else
-        /etc/init.d/bt restart
+        /etc/init.d/bt stop
+    fi
+    
+    sleep 2
+    
+    # 启动服务
+    if systemctl is-active --quiet bt; then
+        systemctl start bt
+    else
+        /etc/init.d/bt start
     fi
     
     if [[ $? -eq 0 ]]; then
         echo "宝塔面板服务重启成功"
-        # 等待服务完全启动
-        sleep 5
+        sleep 3
     else
         echo "警告: 宝塔面板服务重启失败，请手动检查"
-        echo "尝试使用备用方式重启..."
-        /etc/init.d/bt restart
     fi
 }
 
@@ -374,7 +340,8 @@ show_result() {
     fi
     
     if [[ ! -z "$USERNAME" ]]; then
-        echo "用户名: 已修改"
+        CURRENT_USER=$(cat "$DEFAULT_USER_FILE" 2>/dev/null || echo "未知")
+        echo "用户名: $CURRENT_USER"
     fi
     
     if [[ ! -z "$PASSWORD" ]]; then
@@ -386,24 +353,8 @@ show_result() {
     IP=$(curl -s ipv4.icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}' || echo "服务器IP")
     ENTRY=$(cat "$USER_FILE" 2>/dev/null || echo "$DEFAULT_SECURITY_ENTRY")
     PORT=$(cat "$CONFIG_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
-    echo "面板地址: http://$IP:$PORT$ENTRY"
+    echo "面板地址: https://$IP:$PORT$ENTRY"
     echo ""
-    echo "防火墙状态:"
-    if systemctl is-active --quiet firewalld; then
-        echo "firewalld: 运行中"
-        if firewall-cmd --list-ports 2>/dev/null | grep -q "$PORT/tcp"; then
-            echo "端口 $PORT: 已开放"
-        else
-            echo "端口 $PORT: 未开放"
-        fi
-    else
-        echo "firewalld: 未运行"
-        if iptables -L INPUT -n 2>/dev/null | grep -q "tcp dpt:$PORT"; then
-            echo "iptables端口 $PORT: 已开放"
-        else
-            echo "iptables端口 $PORT: 未开放"
-        fi
-    fi
     echo "=================================================="
 }
 
@@ -450,7 +401,7 @@ main() {
     # 执行修改操作
     change_port
     change_security_entry
-    change_credentials
+    change_credentials_direct "$USERNAME" "$PASSWORD"
     restart_bt_panel
     show_result
 }
