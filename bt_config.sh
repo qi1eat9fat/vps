@@ -232,7 +232,7 @@ show_result() {
     IP=$(curl -s ipv4.icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}' || echo "服务器IP")
     ENTRY=$(cat "$USER_FILE" 2>/dev/null || echo "$DEFAULT_SECURITY_ENTRY")
     PORT=$(cat "$CONFIG_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
-    echo "面板地址: http://$IP:$PORT$ENTRY"
+    echo "面板地址: https://$IP:$PORT$ENTRY"
     echo ""
     echo "防火墙状态:"
     if systemctl is-active --quiet firewalld; then
