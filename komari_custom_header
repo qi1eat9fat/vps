@@ -1,0 +1,322 @@
+<script>
+  /* --- 基础配置 (合并了你的个性化设置和功能开关) --- */
+  
+  /* 开启流量显示 */
+  window.ShowNetTransfer = true;
+  
+  /* 固定顶部服务器名称 (来自第二段的功能) */
+  window.FixedTopServerName = true;
+  
+  /* 自定义描述 (保留你的设置) */
+  window.CustomDesc = "萬事勝意";
+  
+  /* 人物插图设置 */
+  /* 注意：为了显示自定义图片，必须把 DisableAnimatedMan 设为 false */
+  window.DisableAnimatedMan = false; 
+  window.CustomIllustration = 'https://image.fatqi.pp.ua/%E9%9B%BE%E9%9B%A8%E9%AD%94%E7%90%86%E6%B2%99.webp';
+</script>
+
+<script src="https://cdn.jsdelivr.net/gh/mocchen/cssmeihua/js/aixin.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/mocchen/cssmeihua/js/yinghua.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/mocchen/cssmeihua/js/xiaoxingxing.js"></script>
+
+<script>
+(function() {
+  // 配置
+  var CONFIG = {
+    interval: 60000,
+    apiUrl: '/api/rpc2',
+    trafficTolerance: 0.10
+  };
+
+  // 注入样式 (隐藏部分默认页脚，适配新UI)
+  var style = document.createElement('style');
+  style.textContent = '.server-footer-name>div:first-child{visibility:hidden!important}.server-footer-theme{display:none!important}';
+  document.head.appendChild(style);
+
+  /* [已修改] 移除了此处原本的 window.CustomDesc 等变量定义
+     避免覆盖顶部已设置好的 "萬事勝意" 和自定义图片 
+  */
+
+  // 工具函数
+  var UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  var UNIT_MAP = { KIB: 1024, MIB: 1048576, GIB: 1073741824, TIB: 1099511627776 };
+  var CYCLE_MAP = { 30: '月', 92: '季', 184: '半年', 365: '年', 730: '二年', 1095: '三年', 1825: '五年' };
+
+  function formatBytes(bytes) {
+    if (!bytes) return { value: '0', unit: 'B' };
+    var i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return { value: (bytes / Math.pow(1024, i)).toFixed(2), unit: UNITS[i] };
+  }
+
+  function formatTime(s) {
+    if (!s) return 'N/A';
+    try {
+      return new Date(s).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch (e) { return 'N/A'; }
+  }
+
+  function getCycleText(c) {
+    if (!c || c <= 0) return c === -1 || c === 0 ? '一次性' : '年';
+    for (var days in CYCLE_MAP) {
+      if (Math.abs(c - days) <= 3) return CYCLE_MAP[days];
+    }
+    var y = Math.round(c / 365);
+    return y >= 1 && y <= 10 ? y + '年' : '年';
+  }
+
+  function calcResetDays(expiredAt) {
+    if (!expiredAt) return 'N/A';
+    try {
+      var day = new Date(expiredAt).getDate(), now = new Date();
+      var reset = new Date(now.getFullYear(), now.getMonth(), day);
+      if (reset <= now) reset.setMonth(reset.getMonth() + 1);
+      return Math.ceil((reset - now) / 86400000) + '日';
+    } catch (e) { return 'N/A'; }
+  }
+
+  function parseTraffic(text) {
+    var m = text.match(/([\d.]+)\s*(GiB|MiB|TiB|KiB)/i);
+    return m ? parseFloat(m[1]) * (UNIT_MAP[m[2].toUpperCase()] || 1) : null;
+  }
+
+  function normName(n) { return n.toUpperCase().replace(/[^A-Z0-9-]/g, ''); }
+
+  function getColor(p) { return 'hsl(' + ((100 - p) * 1.4) + ',70%,50%)'; }
+
+  // 渲染器
+  var barCache = new Map();
+
+  function createBar(d) {
+    var uf = formatBytes(d.used), tf = formatBytes(d.limit);
+    var pc = Math.min(100, d.used / d.limit * 100).toFixed(2);
+    var div = document.createElement('div');
+    div.className = 'space-y-1.5 traffic-bar';
+    div.dataset.uuid = d.uuid;
+    div.style.width = '100%';
+    div.innerHTML = 
+      '<div class="flex items-center justify-between">' +
+        '<div class="flex items-baseline gap-1">' +
+          '<span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-val">' + uf.value + '</span>' +
+          '<span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-unit">' + uf.unit + '</span>' +
+          '<span class="text-[10px] text-neutral-500 dark:text-neutral-400">/ ' + tf.value + ' ' + tf.unit + '</span>' +
+        '</div>' +
+        '<div class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300 percent-val">' + pc + '%</div>' +
+      '</div>' +
+      '<div class="relative h-1.5" style="width:100%">' +
+        '<div class="absolute inset-0 bg-neutral-100 dark:bg-neutral-800 rounded-full"></div>' +
+        '<div class="absolute inset-0 rounded-full transition-all duration-300 progress-bar" style="width:' + pc + '%;background-color:' + getColor(parseFloat(pc)) + '"></div>' +
+      '</div>' +
+      '<div class="flex items-center justify-between">' +
+        '<div class="text-[10px] text-neutral-500 dark:text-neutral-400 update-time">更新于: ' + formatTime(d.next_update) + '</div>' +
+        '<div class="text-[10px] text-neutral-500 dark:text-neutral-400 reset-date">距离流量重置: ' + d.reset_date + '</div>' +
+      '</div>';
+    return div;
+  }
+
+  function updateBar(el, d) {
+    var uf = formatBytes(d.used);
+    var pc = Math.min(100, d.used / d.limit * 100).toFixed(2);
+    el.querySelector('.used-val').textContent = uf.value;
+    el.querySelector('.used-unit').textContent = uf.unit;
+    el.querySelector('.percent-val').textContent = pc + '%';
+    el.querySelector('.update-time').textContent = '更新于: ' + formatTime(d.next_update);
+    el.querySelector('.reset-date').textContent = '距离流量重置: ' + d.reset_date;
+    var bar = el.querySelector('.progress-bar');
+    bar.style.width = pc + '%';
+    bar.style.backgroundColor = getColor(parseFloat(pc));
+  }
+
+  function fixPrice(container, d) {
+    if (!d.price || d.billing_cycle == null) return;
+    var text = '价格: ' + (d.currency || '$') + d.price + '/' + getCycleText(d.billing_cycle);
+    var ps = container.getElementsByTagName('p');
+    for (var i = 0; i < ps.length; i++) {
+      if (ps[i].textContent.indexOf('价格:') !== -1) ps[i].textContent = text;
+    }
+  }
+
+  function getCardTraffic(container) {
+    var divs = container.querySelectorAll('.inline-flex');
+    var up = null, down = null;
+    for (var i = 0; i < divs.length; i++) {
+      var t = divs[i].textContent;
+      if (t.indexOf('上传') !== -1) up = parseTraffic(t);
+      else if (t.indexOf('下载') !== -1) down = parseTraffic(t);
+    }
+    return up && down ? { up: up, down: down } : null;
+  }
+
+  function matchCard(candidates, d) {
+    if (candidates.length === 1) return candidates[0];
+    var best = null, bestDiff = Infinity;
+    for (var i = 0; i < candidates.length; i++) {
+      var traffic = getCardTraffic(candidates[i].closest('div'));
+      if (!traffic) continue;
+      var upDiff = Math.abs(traffic.up - d.net_total_up) / Math.max(d.net_total_up, 1);
+      var downDiff = Math.abs(traffic.down - d.net_total_down) / Math.max(d.net_total_down, 1);
+      if (upDiff < CONFIG.trafficTolerance && downDiff < CONFIG.trafficTolerance) {
+        var avg = (upDiff + downDiff) / 2;
+        if (avg < bestDiff) { best = candidates[i]; bestDiff = avg; }
+      }
+    }
+    return best || candidates[0];
+  }
+
+  function render(list) {
+    var sections = document.querySelectorAll('section.grid.items-center.gap-2');
+    var used = new Set();
+
+    for (var i = 0; i < list.length; i++) {
+      var d = list[i];
+      
+      // 【修改点 1】删除了这里原本的 if (!d.limit || !d.used) continue; 
+      // 让代码即使是不限流量的机器也能往下跑，去执行 fixPrice
+
+      var norm = normName(d.name);
+      var candidates = [];
+      for (var j = 0; j < sections.length; j++) {
+        if (used.has(sections[j])) continue;
+        var nameEl = sections[j].querySelector('p');
+        if (nameEl && normName(nameEl.textContent.trim()) === norm) candidates.push(sections[j]);
+      }
+      if (!candidates.length) continue;
+
+      var target = matchCard(candidates, d);
+      used.add(target);
+
+      var container = target.closest('div');
+      
+      // 【关键点】现在无论是否限流，都会执行这一步，价格显示就正常了
+      fixPrice(container, d);
+
+      // 【修改点 2】把拦截放在这里
+      // 如果没有设置限额(d.limit不存在) 或者 已用为0，就不画进度条了，直接处理下一台
+      if (!d.limit || !d.used) continue;
+
+      // 下面是画进度条的逻辑（保持不变）
+      var uploadDownloadSec = null;
+      var allSections = container.querySelectorAll('section.flex.items-center.w-full.justify-between.gap-1');
+      for (var k = 0; k < allSections.length; k++) {
+        if (allSections[k].textContent.indexOf('上传:') !== -1 && allSections[k].textContent.indexOf('下载:') !== -1) {
+          uploadDownloadSec = allSections[k];
+          break;
+        }
+      }
+      
+      if (!uploadDownloadSec) continue;
+
+      var existingBar = container.querySelector('.traffic-bar[data-uuid="' + d.uuid + '"]');
+      
+      if (existingBar) {
+        updateBar(existingBar, d);
+      } else {
+        var bar = createBar(d);
+        uploadDownloadSec.parentNode.insertBefore(bar, uploadDownloadSec.nextSibling);
+        barCache.set(d.uuid, bar);
+      }
+    }
+  }
+
+  // 数据管理
+  var dataCache = null, loading = false;
+
+  function rpc(method, params) {
+    return fetch(CONFIG.apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ id: Date.now(), method: method, params: params || {}, jsonrpc: '2.0' })
+    }).then(function(r) { return r.json(); });
+  }
+
+  function calcUsed(up, down, type) {
+    if (type === 'max') return Math.max(up, down);
+    if (type === 'min') return Math.min(up, down);
+    if (type === 'up') return up;
+    if (type === 'down') return down;
+    return up + down;
+  }
+
+  function fetchData(cb) {
+    var now = Date.now();
+    if (dataCache && now - dataCache.time < CONFIG.interval) { cb(dataCache.data); return; }
+    if (loading) return;
+    loading = true;
+
+    rpc('common:getNodes').then(function(res) {
+      var nodes = Object.values(res.result || res.data || {});
+      return Promise.all(nodes.map(function(n) {
+        return rpc('common:getNodeRecentStatus', { uuid: n.uuid, limit: 1 }).then(function(sr) {
+          var rec = ((sr.result || sr.data || {}).records || [])[0] || {};
+          var up = rec.net_total_up || 0, down = rec.net_total_down || 0;
+          return {
+            name: n.name, uuid: n.uuid,
+            limit: n.traffic_limit || 0,
+            used: calcUsed(up, down, n.traffic_limit_type || 'sum'),
+            next_update: rec.time,
+            reset_date: calcResetDays(n.expired_at),
+            price: n.price, currency: n.currency, billing_cycle: n.billing_cycle,
+            net_total_up: up, net_total_down: down
+          };
+        }).catch(function() {
+          return {
+            name: n.name, uuid: n.uuid, limit: n.traffic_limit || 0, used: 0,
+            next_update: null, reset_date: calcResetDays(n.expired_at),
+            price: n.price, currency: n.currency, billing_cycle: n.billing_cycle,
+            net_total_up: 0, net_total_down: 0
+          };
+        });
+      }));
+    }).then(function(data) {
+      dataCache = { time: now, data: data };
+      cb(data);
+    }).finally(function() { loading = false; });
+  }
+
+  // 观察器 - 优化防止频繁触发
+  var observer = null, timer = null, renderPending = false;
+
+  function update() { fetchData(render); }
+
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    setTimeout(function() {
+      renderPending = false;
+      update();
+    }, 300);
+  }
+
+  function init() {
+    if (observer) return;
+    
+    observer = new MutationObserver(scheduleRender);
+    observer.observe(document.body, { childList: true, subtree: true });
+    
+    update();
+    timer = setInterval(update, CONFIG.interval);
+    
+    window.addEventListener('beforeunload', function() {
+      if (observer) observer.disconnect();
+      if (timer) clearInterval(timer);
+      barCache.clear();
+    }, { once: true });
+  }
+
+  // 启动
+  function tryInit() {
+    if (document.querySelector('section.grid[class*="grid-cols-"]')) {
+      requestAnimationFrame(init);
+    } else {
+      setTimeout(tryInit, 250);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tryInit, { once: true });
+  } else {
+    tryInit();
+  }
+})();
+</script>
